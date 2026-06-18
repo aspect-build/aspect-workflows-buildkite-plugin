@@ -9,6 +9,10 @@ steps:
     plugins:
       - plugin-linter#v3.3.0:
           id: aspect-build/aspect-workflows
+          # README examples pin to a commit SHA (our security guidance), which
+          # the linter's "versions up-to-date" check flags as an invalid
+          # version. skip-invalid keeps that a non-failure.
+          skip-invalid: true
 
   - label: ":shell: Shellcheck"
     plugins:

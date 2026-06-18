@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Aspect Workflows Buildkite plugin — environment hook.
+# Aspect Workflows Buildkite plugin — pre-command hook.
 #
 # On an Aspect Workflows runner, `aspect <task>` already routes through the
 # runner's caching infrastructure on its own. This plugin extends the same
@@ -14,8 +14,14 @@
 #      `rosetta bazelrc`, so raw `bazel` picks up the Workflows-tuned config
 #      (remote cache, BES backend, local NVMe disk cache).
 #
-# It runs as the `environment` hook — earliest in the job, before the command
-# step — so /etc/bazel.bazelrc exists and warming is done before any `bazel` call.
+# It runs as the `pre-command` hook, NOT `environment`. `rosetta bazelrc` reads
+# the workspace's `.bazelversion` (and resolves platform flags) relative to the
+# job's working directory, so it must run *after* the repository checkout. The
+# `environment` hook runs before checkout — there is no workspace yet, so
+# `rosetta bazelrc` fails with ExitCode.ERROR (200). `pre-command` runs after
+# checkout (CWD = the checked-out workspace) and before the step's command, so
+# /etc/bazel.bazelrc exists and warming is done before any `bazel` call. This
+# matches setup-aspect's GitHub Action, which runs after actions/checkout.
 #
 # Buildkite runners are typically Aspect Workflows runners, but the plugin guards
 # on ASPECT_WORKFLOWS_RUNNER and no-ops gracefully when it is unset, so it is safe
@@ -70,20 +76,57 @@ wait_for_warming() {
   fi
 }
 
-# Generate /etc/bazel.bazelrc via `rosetta bazelrc`.
+# Generate the system bazelrc via `rosetta bazelrc`.
 #
 # `rosetta bazelrc` reads .aspect/workflows/config.yaml by default and fails if
 # that file is absent or unreadable. We only need the generated rc, not a real
 # Workflows config, so point it at a throwaway config. The schema requires a
 # non-empty task list, so define a single placeholder task.
+#
+# `rosetta bazelrc` resolves the Bazel version from the workspace's
+# `.bazelversion` and platform flags relative to CWD, so this must run after the
+# repo checkout (hence the pre-command hook — see the file header).
+#
+# rosetta's stdout (the rc content) is captured to a temp file and only moved
+# into place once rosetta exits 0. We never redirect straight into
+# ${SYSTEM_BAZELRC}: that would truncate it before rosetta runs and, on failure,
+# leave a half-written or empty system rc that silently misconfigures every
+# later `bazel` call.
+#
+# A `rosetta bazelrc` failure fails the job, matching setup-aspect's GitHub
+# Action (which lets the exec error propagate). rosetta's own error is left on
+# stderr — not swallowed — and we add our exit code on top. Any existing
+# ${SYSTEM_BAZELRC} is left untouched on failure.
+#
+# `rosetta bazelrc` resolves the Bazel version from the workspace's
+# `.bazelversion` with no fallback (no default, no env var, no bazelisk
+# resolution): a missing file is fatal (ExitCode.ERROR / 200). We pre-flight that
+# check so the failure is an actionable message instead of an opaque rosetta exit
+# code. CWD is the checked-out workspace root (the pre-command hook runs after
+# checkout), which is also where the step's later `bazel` calls run.
 write_bazelrc() {
   echo "--- :aspect: Write ${SYSTEM_BAZELRC} via \`rosetta bazelrc\`"
-  local dummy_dir
-  dummy_dir="$(mktemp -d "${TMPDIR:-/tmp}/aspect-workflows-rosetta-XXXXXX")"
-  # shellcheck disable=SC2064  # expand dummy_dir now, at trap-install time.
-  trap "rm -rf '${dummy_dir}'" RETURN
-  printf 'tasks:\n  - warming:\n' > "${dummy_dir}/config.yaml"
-  rosetta bazelrc --config "${dummy_dir}/config.yaml" > "${SYSTEM_BAZELRC}"
+
+  if [[ ! -f .bazelversion ]]; then
+    warn "No .bazelversion file in $(pwd). \`rosetta bazelrc\` resolves the Bazel version from .bazelversion and has no fallback, so it cannot generate a bazelrc here. Commit a .bazelversion to the repo (the same file Bazelisk reads), or apply this plugin only to steps whose working directory contains one."
+    return 1
+  fi
+
+  local work_dir
+  work_dir="$(mktemp -d "${TMPDIR:-/tmp}/aspect-workflows-rosetta-XXXXXX")"
+  # shellcheck disable=SC2064  # expand work_dir now, at trap-install time.
+  trap "rm -rf '${work_dir}'" RETURN
+
+  printf 'tasks:\n  - warming:\n' > "${work_dir}/config.yaml"
+
+  local rc_out="${work_dir}/bazel.bazelrc" status=0
+  rosetta bazelrc --config "${work_dir}/config.yaml" > "${rc_out}" || status=$?
+  if [[ "${status}" -ne 0 ]]; then
+    warn "\`rosetta bazelrc\` failed (exit ${status}); see its error above. ${SYSTEM_BAZELRC} was left unchanged."
+    return "${status}"
+  fi
+
+  cat "${rc_out}" > "${SYSTEM_BAZELRC}"
   log "Wrote Workflows-tuned bazelrc to ${SYSTEM_BAZELRC}"
 }
 

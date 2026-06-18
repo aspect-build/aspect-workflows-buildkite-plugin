@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 
-# Tests for the environment hook, run via the buildkite/plugin-tester image
+# Tests for the pre-command hook, run via the buildkite/plugin-tester image
 # (`docker-compose run --rm tests`). Drives the hook through its branches with
 # ASPECT_WORKFLOWS_RUNNER_* env vars.
 #
@@ -13,7 +13,7 @@
 setup() {
   load "${BATS_PLUGIN_PATH}/load.bash"
 
-  HOOK="${PWD}/hooks/environment"
+  HOOK="${PWD}/hooks/pre-command"
 
   # Redirect the system bazelrc write to a temp file so tests don't need root.
   BAZELRC_OUT="$(mktemp)"
@@ -25,10 +25,21 @@ setup() {
 
   # A bin dir we prepend to PATH for hand-rolled stubs.
   STUB_BIN="$(mktemp -d)"
+
+  # A fake checked-out workspace, with a .bazelversion, that the hook runs in:
+  # the pre-command hook reads .bazelversion from CWD. Tests cd here before
+  # invoking the hook (the missing-.bazelversion test omits the file).
+  WORKSPACE_DIR="$(mktemp -d)"
+  echo "9.0.0" > "${WORKSPACE_DIR}/.bazelversion"
 }
 
 teardown() {
-  rm -rf "${BAZELRC_OUT}" "${BUILDKITE_ENV_FILE}" "${STUB_BIN}"
+  rm -rf "${BAZELRC_OUT}" "${BUILDKITE_ENV_FILE}" "${STUB_BIN}" "${WORKSPACE_DIR}"
+}
+
+# Run the hook from inside the fake workspace (CWD with a .bazelversion).
+run_hook() {
+  run bash -c "cd '${WORKSPACE_DIR}' && '${HOOK}'"
 }
 
 # Put a `rosetta` on PATH whose `bazelrc` subcommand prints $1 (default rc text).
@@ -43,8 +54,20 @@ EOF
   export PATH="${STUB_BIN}:${PATH}"
 }
 
+# Put a `rosetta` on PATH that prints an error to stderr and exits non-zero,
+# mimicking a real `rosetta bazelrc` failure (e.g. ExitCode.ERROR == 200).
+stub_failing_rosetta() {
+  cat > "${STUB_BIN}/rosetta" <<'EOF'
+#!/bin/bash
+echo "rosetta: Unexpected error when generating bazelrc content" >&2
+exit 200
+EOF
+  chmod +x "${STUB_BIN}/rosetta"
+  export PATH="${STUB_BIN}:${PATH}"
+}
+
 @test "no-ops when not on an Aspect Workflows runner" {
-  run "${HOOK}"
+  run_hook
 
   assert_success
   assert_output --partial "Not an Aspect Workflows runner"
@@ -58,7 +81,7 @@ EOF
   export ASPECT_WORKFLOWS_RUNNER_HAS_NVME_STORAGE=1
   stub_rosetta "build --remote_cache=grpcs://example"
 
-  run "${HOOK}"
+  run_hook
 
   assert_success
   assert_output --partial "Detected Aspect Workflows runner"
@@ -76,7 +99,7 @@ EOF
   export ASPECT_WORKFLOWS_RUNNER_VERSION="2026.22.39"
   stub_rosetta
 
-  run "${HOOK}"
+  run_hook
 
   assert_success
   assert_output --partial "Workflows version: 2026.22.39"
@@ -95,7 +118,7 @@ EOF
   # Create the marker shortly after the hook starts polling.
   ( sleep 2; touch "${marker}" ) &
 
-  run "${HOOK}"
+  run_hook
 
   assert_success
   assert_output --partial "Warming is still in progress — waiting..."
@@ -112,7 +135,7 @@ EOF
   export ASPECT_WORKFLOWS_RUNNER_WARMING_COMPLETE_MARKER_FILE="${marker}"
   stub_rosetta
 
-  run "${HOOK}"
+  run_hook
 
   assert_success
   refute_output --partial "Warming is still in progress"
@@ -131,7 +154,7 @@ EOF
   export ASPECT_WORKFLOWS_RUNNER_WARMING_CACHE_VERSION_FILE="${version_file}"
   stub_rosetta
 
-  run "${HOOK}"
+  run_hook
 
   assert_success
   assert_output --partial "Runner warmed from cache version: cache-v123"
@@ -144,7 +167,7 @@ EOF
   export ASPECT_WORKFLOWS_RUNNER_WARMING_ENABLED=1
   stub_rosetta
 
-  run "${HOOK}"
+  run_hook
 
   assert_success
   assert_output --partial "ASPECT_WORKFLOWS_RUNNER_WARMING_COMPLETE_MARKER_FILE is not set"
@@ -156,7 +179,7 @@ EOF
   # real rosetta (if any) on the runner can't satisfy the lookup.
   export PATH="${STUB_BIN}:/usr/bin:/bin"
 
-  run "${HOOK}"
+  run_hook
 
   assert_success
   assert_output --partial "\`rosetta\` is not on PATH"
@@ -171,7 +194,7 @@ EOF
   export ASPECT_WORKFLOWS_RUNNER_BAZELRC_GENERATE=1
   stub_rosetta
 
-  run "${HOOK}"
+  run_hook
 
   assert_success
   assert_output --partial "is out of date"
@@ -180,4 +203,41 @@ EOF
 
   run cat "${BUILDKITE_ENV_FILE}"
   assert_output --partial "ASPECT_WORKFLOWS_BUILDKITE_PLUGIN_DEPRECATED=1"
+}
+
+@test "fails the build (and leaves the system rc untouched) when rosetta errors" {
+  export ASPECT_WORKFLOWS_RUNNER=1
+  # Pre-existing system rc that must NOT be clobbered by a failed run.
+  echo "build --pre-existing" > "${BAZELRC_OUT}"
+  stub_failing_rosetta
+
+  run_hook
+
+  assert_failure 200
+  assert_output --partial "rosetta bazelrc\` failed (exit 200)"
+  # rosetta's own stderr is surfaced, not swallowed.
+  assert_output --partial "Unexpected error when generating bazelrc content"
+  refute_output --partial "Wrote Workflows-tuned bazelrc"
+
+  # The existing system rc is untouched (not truncated to empty).
+  run cat "${BAZELRC_OUT}"
+  assert_output "build --pre-existing"
+}
+
+@test "fails with an actionable message when the workspace has no .bazelversion" {
+  export ASPECT_WORKFLOWS_RUNNER=1
+  # Pre-existing system rc that must NOT be clobbered.
+  echo "build --pre-existing" > "${BAZELRC_OUT}"
+  stub_rosetta  # rosetta is present; the guard should fire before calling it.
+  rm -f "${WORKSPACE_DIR}/.bazelversion"
+
+  run_hook
+
+  assert_failure
+  assert_output --partial "No .bazelversion file"
+  refute_output --partial "Wrote Workflows-tuned bazelrc"
+
+  # rosetta was never invoked, and the existing system rc is untouched.
+  run cat "${BAZELRC_OUT}"
+  assert_output "build --pre-existing"
 }
