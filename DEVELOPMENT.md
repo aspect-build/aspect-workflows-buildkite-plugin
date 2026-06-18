@@ -9,6 +9,7 @@
 | `plugin.yml` | The plugin's public contract (name/description/author, `requirements`, config schema). |
 | `tests/` | BATS tests, run via the `buildkite/plugin-tester` Docker image. |
 | `.buildkite/pipeline.yml` | This plugin's own CI: tests, linter, shellcheck. |
+| `.github/workflows/` | Weekly tagging and the manual release workflow (+ their `release_*.sh` helpers). See [Releasing](#releasing). |
 
 ## Test
 
@@ -37,6 +38,25 @@ against `plugin.yml`.
 
 ## Releasing
 
-This plugin is referenced by commit SHA, not tag (see the README). Weekly
-`YYYY.VV` tags are dated pointers for discoverability only — always pin consumers
-to a SHA.
+This plugin is referenced by commit SHA, not tag (see the README). It uses two
+tiers of tags, both matching aspect-build/aspect-cli's scheme:
+
+| | Tag | Workflow | Trigger | GitHub Release? |
+|---|---|---|---|---|
+| **Weekly** | `YYYY.VV` (e.g. `2026.22`) | `weekly_tag.yaml` | cron + push to main | no |
+| **Release** | `vYYYY.VV.N` (e.g. `v2026.22.3`) | `tag_release.yaml` | manual `workflow_dispatch` | yes |
+
+Across both tiers: **pin to the commit SHA, not the tag.** Tags are mutable.
+
+**Weekly tags** are dated pointers for discoverability. `weekly_tag.yaml` runs on
+a Monday cron **and** on every push to `main`; each run no-ops if the week's tag
+already exists or if `main` hasn't advanced since the last `YYYY.VV` tag — so a
+quiet repo gets at most one tag per week, only when something shipped.
+
+**Releases** are cut manually from the Actions tab (`tag_release.yaml`) when you
+want richer, changelog-bearing notes. The release version is `vYYYY.VV.N`: the
+current weekly tag plus the number of commits since it (`release_version.sh`,
+derived via `git describe`). The notes lead with a copy-paste plugin-pin snippet
+pinned to the released SHA (`release_notes.sh`), followed by GitHub's
+auto-generated changelog. Before the first weekly tag exists, `release_version.sh`
+falls back to this week's `YYYY.VV.0`.
