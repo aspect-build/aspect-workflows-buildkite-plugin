@@ -1,0 +1,120 @@
+#!/bin/bash
+#
+# Aspect Workflows Buildkite plugin — environment hook.
+#
+# On an Aspect Workflows runner, `aspect <task>` already routes through the
+# runner's caching infrastructure on its own. This plugin extends the same
+# treatment to *raw* `bazel <verb>` calls outside of `aspect <task>`:
+#
+#   1. Log the runner's identity for traceability.
+#   2. Wait for the runner's cache warming to complete — `aspect <task>` does
+#      this itself, but a raw `bazel` call would otherwise race the still-running
+#      bootstrap warming (competing for CPU/disk, missing the warmed caches).
+#   3. Write /etc/bazel.bazelrc (the first rc Bazel loads) via the runner-provided
+#      `rosetta bazelrc`, so raw `bazel` picks up the Workflows-tuned config
+#      (remote cache, BES backend, local NVMe disk cache).
+#
+# It runs as the `environment` hook — earliest in the job, before the command
+# step — so /etc/bazel.bazelrc exists and warming is done before any `bazel` call.
+#
+# Buildkite runners are typically Aspect Workflows runners, but the plugin guards
+# on ASPECT_WORKFLOWS_RUNNER and no-ops gracefully when it is unset, so it is safe
+# to leave in a pipeline that occasionally runs elsewhere.
+#
+# This is a port of the Workflows-runner branch of aspect-build/setup-aspect
+# (setupOnWorkflowsRunner in index.js); the ephemeral-runner install/cache/auth
+# path is intentionally omitted.
+
+set -euo pipefail
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/shared.bash
+source "${DIR}/../lib/shared.bash"
+
+# Path of the system bazelrc — the first rc Bazel loads. Overridable for tests
+# (writing the real path requires root, which a test environment lacks).
+SYSTEM_BAZELRC="${ASPECT_WORKFLOWS_PLUGIN_SYSTEM_BAZELRC:-/etc/bazel.bazelrc}"
+
+# Block until the runner's cache warming completes, mirroring the Aspect CLI's
+# pre-task wait. Warming state is published by the runner agent: enabled when
+# ASPECT_WORKFLOWS_RUNNER_WARMING_ENABLED is set, complete when the marker file
+# named by ASPECT_WORKFLOWS_RUNNER_WARMING_COMPLETE_MARKER_FILE exists. The poll
+# has no timeout by design: if warming hits a critical error the bootstrap
+# terminates the runner (and this job with it), so the loop cannot hang.
+wait_for_warming() {
+  [[ -z "${ASPECT_WORKFLOWS_RUNNER_WARMING_ENABLED:-}" ]] && return 0
+
+  local marker="${ASPECT_WORKFLOWS_RUNNER_WARMING_COMPLETE_MARKER_FILE:-}"
+  if [[ -z "${marker}" ]]; then
+    warn "Warming is enabled on this runner but ASPECT_WORKFLOWS_RUNNER_WARMING_COMPLETE_MARKER_FILE is not set — unable to wait for warming to complete."
+    return 0
+  fi
+
+  if [[ ! -f "${marker}" ]]; then
+    echo "--- :aspect: Wait for runner cache warming to complete"
+    log "Warming is still in progress — waiting..."
+    local start elapsed
+    start="$(date +%s)"
+    while [[ ! -f "${marker}" ]]; do
+      sleep 1
+    done
+    elapsed=$(( $(date +%s) - start ))
+    log "Warming completed after ${elapsed}s"
+  fi
+
+  local version_file="${ASPECT_WORKFLOWS_RUNNER_WARMING_CACHE_VERSION_FILE:-}"
+  if [[ -n "${version_file}" && -f "${version_file}" ]]; then
+    local cache_version
+    cache_version="$(tr -d '[:space:]' < "${version_file}")"
+    [[ -n "${cache_version}" ]] && log "Runner warmed from cache version: ${cache_version}"
+  fi
+}
+
+# Generate /etc/bazel.bazelrc via `rosetta bazelrc`.
+#
+# `rosetta bazelrc` reads .aspect/workflows/config.yaml by default and fails if
+# that file is absent or unreadable. We only need the generated rc, not a real
+# Workflows config, so point it at a throwaway config. The schema requires a
+# non-empty task list, so define a single placeholder task.
+write_bazelrc() {
+  echo "--- :aspect: Write ${SYSTEM_BAZELRC} via \`rosetta bazelrc\`"
+  local dummy_dir
+  dummy_dir="$(mktemp -d "${TMPDIR:-/tmp}/aspect-workflows-rosetta-XXXXXX")"
+  # shellcheck disable=SC2064  # expand dummy_dir now, at trap-install time.
+  trap "rm -rf '${dummy_dir}'" RETURN
+  printf 'tasks:\n  - warming:\n' > "${dummy_dir}/config.yaml"
+  rosetta bazelrc --config "${dummy_dir}/config.yaml" > "${SYSTEM_BAZELRC}"
+  log "Wrote Workflows-tuned bazelrc to ${SYSTEM_BAZELRC}"
+}
+
+main() {
+  if [[ -z "${ASPECT_WORKFLOWS_RUNNER:-}" ]]; then
+    log "Not an Aspect Workflows runner (ASPECT_WORKFLOWS_RUNNER unset) — skipping Aspect Workflows setup."
+    return 0
+  fi
+
+  log "Detected Aspect Workflows runner (ASPECT_WORKFLOWS_RUNNER set)"
+
+  echo "--- :aspect: Workflows runner metadata"
+  log_workflows_runner_metadata
+
+  wait_for_warming
+
+  # The runner sets ASPECT_WORKFLOWS_RUNNER_BAZELRC_GENERATE during the transition
+  # window where a newer bazelrc-generation mechanism is available alongside the
+  # legacy `rosetta` binary. Warn early — `rosetta` is guaranteed to be removed in
+  # a future major Aspect Workflows release, at which point this plugin will stop
+  # configuring the environment for raw `bazel` calls.
+  if [[ -n "${ASPECT_WORKFLOWS_RUNNER_BAZELRC_GENERATE:-}" ]]; then
+    mark_deprecated "This version of aspect-build/aspect-workflows-buildkite-plugin is out of date. The Aspect Workflows runner is signaling that a newer mechanism for configuring the Bazel environment is available (ASPECT_WORKFLOWS_RUNNER_BAZELRC_GENERATE is set). The plugin will continue to work in this Aspect Workflows version via the legacy \`rosetta\` fallback, but will stop configuring raw \`bazel\` calls after the next major Aspect Workflows release removes \`rosetta\`. Upgrade the plugin to the latest release."
+  fi
+
+  if ! command -v rosetta > /dev/null 2>&1; then
+    mark_deprecated "\`rosetta\` is not on PATH on this Workflows runner. The plugin expected to call \`rosetta bazelrc > ${SYSTEM_BAZELRC}\` to populate the Workflows-tuned Bazel rc. Upgrade the plugin to the latest release to pick up the replacement mechanism."
+    return 0
+  fi
+
+  write_bazelrc
+}
+
+main "$@"

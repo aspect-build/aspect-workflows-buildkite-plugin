@@ -1,0 +1,11 @@
+name: Aspect Workflows
+description: Prepares Aspect Workflows runners for raw `bazel` calls — waits for cache warming and generates /etc/bazel.bazelrc.
+author: https://github.com/aspect-build
+requirements:
+  - bash
+configuration:
+  # v1 behavior is driven entirely by the runner's ASPECT_WORKFLOWS_RUNNER_* env
+  # vars, so there are no configuration options yet. The empty-but-closed schema
+  # keeps the plugin forward-compatible: future tunables slot in here.
+  properties: {}
+  additionalProperties: false
