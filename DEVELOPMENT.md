@@ -9,7 +9,7 @@
 | `plugin.yml` | The plugin's public contract (name/description/author, `requirements`, config schema). |
 | `tests/` | BATS tests, run via the `buildkite/plugin-tester` Docker image. |
 | `.buildkite/pipeline.yml` | This plugin's own CI on Buildkite: tests, linter, shellcheck. |
-| `.github/workflows/ci.yaml` | The same three checks on GitHub Actions, so every PR is gated without a Buildkite pipeline wired up. |
+| `.github/workflows/ci.yaml` | The same three checks on GitHub Actions, so every PR is gated. |
 | `.github/workflows/` | Weekly tagging and the manual release workflow (+ their `release_*.sh` helpers). See [Releasing](#releasing). |
 
 ## Test

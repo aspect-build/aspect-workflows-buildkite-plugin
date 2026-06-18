@@ -1,6 +1,6 @@
 # CI for the plugin itself: BATS tests, the Buildkite plugin linter, and
-# shellcheck — the same three checks as .buildkite/pipeline.yml, but runnable on
-# GitHub Actions so every PR is gated without a Buildkite pipeline wired up.
+# shellcheck — the same three checks as .buildkite/pipeline.yml, run on GitHub
+# Actions so every push and PR is gated.
 #
 # `ubuntu-latest` ships Docker + `docker compose` (v2), so the BATS suite runs
 # via the buildkite/plugin-tester image exactly as it does locally
