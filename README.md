@@ -17,8 +17,9 @@ runner's remote cache, BES backend, and local NVMe disk cache on its own. But
 many pipelines mix `aspect build` with a separate bare `bazel build` step, and
 without this plugin those bare `bazel` invocations would miss all of that.
 
-The plugin runs in the **`environment` hook** (earliest in the job, before the
-command step) and does three things:
+The plugin runs in the **`pre-command` hook** — after the repository checkout
+(so `rosetta` can read the workspace's `.bazelversion`) and before the step's
+command (so the rc is in place before any `bazel` call). It does three things:
 
 1. **Logs the runner's metadata** (version, cloud, region, instance, …) for
    traceability.
@@ -43,7 +44,7 @@ Add the plugin to any step that runs `bazel` directly:
 steps:
   - command: bazel test //...
     plugins:
-      - aspect-build/aspect-workflows#<commit-sha>: ~
+      - aspect-build/aspect-workflows#19a9eb187ad1f1c65c1b6d64a7fc03589041c8ae: ~ # v2026.25.0
 ```
 
 `aspect <task>` steps don't need the plugin (they self-configure), but it's
@@ -58,8 +59,10 @@ readability and let Renovate keep the SHA fresh:
 
 ```yaml
 plugins:
-  - aspect-build/aspect-workflows#a1b2c3d...: ~ # v2026.22
+  - aspect-build/aspect-workflows#19a9eb187ad1f1c65c1b6d64a7fc03589041c8ae: ~ # v2026.25.0
 ```
+
+Find the latest SHA on the [Releases page](https://github.com/aspect-build/aspect-workflows-buildkite-plugin/releases).
 
 ## Requirements
 
