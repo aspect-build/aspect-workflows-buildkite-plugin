@@ -1,0 +1,43 @@
+# CI for the plugin itself: BATS tests, the Buildkite plugin linter, and
+# shellcheck — the same three checks as .buildkite/pipeline.yml, but runnable on
+# GitHub Actions so every PR is gated without a Buildkite pipeline wired up.
+#
+# `ubuntu-latest` ships Docker + `docker compose` (v2), so the BATS suite runs
+# via the buildkite/plugin-tester image exactly as it does locally
+# (`docker compose run --rm tests`).
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  tests:
+    name: ":shell: Tests"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run BATS tests
+        run: docker compose run --rm tests
+
+  lint:
+    name: ":sparkles: Lint"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run plugin linter
+        # skip-invalid: README examples pin to a commit SHA (our security
+        # guidance), which the linter's version check would otherwise flag.
+        run: |
+          docker run --rm -v "$PWD:/plugin" buildkite/plugin-linter \
+            --id aspect-build/aspect-workflows --path /plugin --skip-invalid
+
+  shellcheck:
+    name: ":shell: Shellcheck"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Run shellcheck
+        run: |
+          docker run --rm -v "$PWD:/mnt" -w /mnt koalaman/shellcheck:stable \
+            --external-sources hooks/pre-command lib/*.bash
