@@ -1,5 +1,14 @@
 # Aspect Workflows Buildkite plugin
 
+> [!WARNING]
+> **This repository is deprecated.** It has been renamed and moved to
+> [**`aspect-build/setup-aspect-buildkite-plugin`**](https://github.com/aspect-build/setup-aspect-buildkite-plugin).
+>
+> All future development and releases happen there. Update your pipelines to
+> reference the new plugin and pin to a release SHA from its
+> [Releases page](https://github.com/aspect-build/setup-aspect-buildkite-plugin/releases).
+> This repo will receive no further updates.
+
 A [Buildkite plugin](https://buildkite.com/docs/plugins) that prepares an
 [Aspect Workflows](https://docs.aspect.build/workflows) runner so that **raw
 `bazel <verb>` calls** — not just `aspect <task>` — route through the runner's
